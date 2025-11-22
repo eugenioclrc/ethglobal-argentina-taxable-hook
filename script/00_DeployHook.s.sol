@@ -25,7 +25,7 @@ contract DeployHookScript is BaseScript {
         address tokenTaxable = makeAddr("tokenTaxable");
         // Deploy the hook using CREATE2
         vm.startBroadcast();
-        AutoLP autoLP = new AutoLP{salt: salt}(poolManager, tokenTaxable);
+        AutoLP autoLP = new AutoLP{salt: salt}(poolManager, tokenTaxable, 8000);
         vm.stopBroadcast();
 
         require(address(autoLP) == hookAddress, "DeployHookScript: Hook Address Mismatch");

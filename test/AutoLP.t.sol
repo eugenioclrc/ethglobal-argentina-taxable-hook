@@ -20,6 +20,7 @@ import {IPositionManager} from "@uniswap/v4-periphery/src/interfaces/IPositionMa
 import {Constants} from "@uniswap/v4-core/test/utils/Constants.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {CurrencySettler} from "@openzeppelin/uniswap-hooks/src/utils/CurrencySettler.sol";
+import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 
 import {EasyPosm} from "./utils/libraries/EasyPosm.sol";
 
@@ -54,19 +55,15 @@ contract AutoLPTest is BaseTest, IUnlockCallback {
         // Deploy the hook to an address with the correct flags
         address flags = address(
             uint160(
-                Hooks.BEFORE_SWAP_FLAG |
-                Hooks.AFTER_SWAP_FLAG |
-                Hooks.BEFORE_ADD_LIQUIDITY_FLAG |
-                Hooks.AFTER_ADD_LIQUIDITY_FLAG |
-                Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG
+                Hooks.BEFORE_SWAP_FLAG
             ) ^ (0x4444 << 144) // Namespace the hook to avoid collisions
         );
-        bytes memory constructorArgs = abi.encode(poolManager, currency0); // Add all the necessary constructor arguments from the hook
+        bytes memory constructorArgs = abi.encode(poolManager, currency0, 80000); // Add all the necessary constructor arguments from the hook
         deployCodeTo("src/AutoLP.sol:AutoLP", constructorArgs, flags);
         hook = AutoLP(flags);
 
         // Create the pool
-        poolKey = PoolKey(currency0, currency1, 3000, 60, IHooks(hook));
+        poolKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
         poolId = poolKey.toId();
         poolManager.initialize(poolKey, Constants.SQRT_PRICE_1_1);
 
@@ -97,65 +94,34 @@ contract AutoLPTest is BaseTest, IUnlockCallback {
     }
 
     function testSwapHook() public {
-        // positions were created in setup()
-
-
-        int24 tickBeforeSwap;
-        (, tickBeforeSwap,,) = poolManager.getSlot0(poolId);
+        uint256 amountIn = 1e18;
 
         // Check user balance before swap
-        uint256 balanceBefore = currency0.balanceOf(address(this));
-        uint256 amountIn = 1e18;
+        uint256 balanceBefore0 = currency0.balanceOf(address(this));
+        uint256 balanceBefore1 = currency1.balanceOf(address(this));
+        (uint160 sqrtPriceX96Before,,,) = poolManager.getSlot0(poolId);
 
         // Approve Hook to spend tokens (for Fee on Top)
         MockERC20(Currency.unwrap(currency0)).approve(address(hook), type(uint256).max);
 
-        // Perform a test swap via manual lock to handle Fee on Top
-        // We cannot use swapRouter because it doesn't support paying side-debts.
-        bytes memory data = abi.encode(amountIn);
-        poolManager.unlock(data);
+        BalanceDelta swapDelta = swapRouter.swapExactTokensForTokens({
+            amountIn: amountIn,
+            amountOutMin: 0, // Very bad, but we want to allow for unlimited price impact
+            zeroForOne: true,
+            poolKey: poolKey,
+            hookData: Constants.ZERO_BYTES,
+            receiver: address(this),
+            deadline: block.timestamp + 1
+        });
 
-        // Verify user paid extra fee
-        // Fee is 5% of 1e18 = 0.05e18
-        // Total paid should be 1.05e18
-        uint256 balanceAfter = currency0.balanceOf(address(this));
-        uint256 fee = amountIn * 5 / 100;
-        int24 tickSpacing = poolKey.tickSpacing;
-        int24 compressed = tickBeforeSwap / tickSpacing;
-        if (tickBeforeSwap < 0 && tickBeforeSwap % tickSpacing != 0) {
-            compressed--;
-        }
-        int24 autoLpTickLower = (compressed + 1) * tickSpacing;
-        int24 autoLpTickUpper = autoLpTickLower + tickSpacing;
-        uint160 sqrtRatioLowerX96 = TickMath.getSqrtPriceAtTick(autoLpTickLower);
-        uint160 sqrtRatioUpperX96 = TickMath.getSqrtPriceAtTick(autoLpTickUpper);
-        uint128 expectedLiquidity = LiquidityAmounts.getLiquidityForAmount0(
-            sqrtRatioLowerX96,
-            sqrtRatioUpperX96,
-            fee
-        );
+        uint256 balanceAfter0 = currency0.balanceOf(address(this));
+        uint256 balanceAfter1 = currency1.balanceOf(address(this));
+        (uint160 sqrtPriceX96After,,,) = poolManager.getSlot0(poolId);
 
-        (uint128 hookLiquidity, , ) = poolManager.getPositionInfo(
-            poolId,
-            address(hook),
-            autoLpTickLower,
-            autoLpTickUpper,
-            bytes32(0)
-        );
-        assertEq(hookLiquidity, expectedLiquidity, "AutoLP should add liquidity using the 5% fee of taxable token");
-        assertEq(balanceBefore - balanceAfter, amountIn + fee, "User should pay swap amount + fee");
+        assertGt(sqrtPriceX96Before, sqrtPriceX96After, "The liquidity should be increased");
 
-
-        // Verify Hook has no tokens left (spent on liquidity)
-        assertEq(currency0.balanceOf(address(hook)), 0, "Hook should have spent all fee tokens");
-
-        // Verify liquidity in expected range [60, 120]
-        // We added Token0, so range is above current tick (approx 0).
-        // Tick spacing is 60. Next usable tick is 60.
-        // Range is [60, 120].
-        // Check liquidity at tick 60.
-        (uint128 liquidity,,,) = poolManager.getTickInfo(poolId, 60);
-        assertGt(liquidity, 0, "Should have liquidity in tick 60");
+        assertEq(balanceBefore0 - balanceAfter0, amountIn, "User should pay swap amountIn");
+        assertGt(balanceAfter1, balanceBefore1, "User should get currency1");
     }
 
     function unlockCallback(bytes calldata data) external override returns (bytes memory) {
@@ -173,7 +139,7 @@ contract AutoLPTest is BaseTest, IUnlockCallback {
         );
 
         // Settle Swap Delta (Input)
-        // delta.amount0() is negative (User owes PM)
+        // delta.amount1() is negative (User owes PM)
         if (delta.amount0() < 0) {
             currency0.settle(poolManager, address(this), uint256(uint128(-delta.amount0())), false);
         }
