@@ -48,7 +48,7 @@ contract AutoLP is BaseHook {
             beforeRemoveLiquidity: true,
             afterRemoveLiquidity: false,
             beforeSwap: true,
-            afterSwap: true,
+            afterSwap: false,
             beforeDonate: false,
             afterDonate: false,
             beforeSwapReturnDelta: false,
@@ -94,10 +94,10 @@ contract AutoLP is BaseHook {
         // ignore math if the sender is the hook itself
         if(sender == address(this)) return (BaseHook.afterAddLiquidity.selector, BalanceDelta.wrap(0));
         
-        console.log("Entering afterAddLiquidity");
+        //console.log("Entering afterAddLiquidity");
         uint256 afterTotalLiquidity = poolManager.getLiquidity(key.toId());
         uint256 liquidityAdded = afterTotalLiquidity - beforeTotalLiquidity;
-        console.log("Liquidity added:", liquidityAdded);
+        //console.log("Liquidity added:", liquidityAdded);
         totalLiquidityAdded += liquidityAdded;
 
         return (BaseHook.afterAddLiquidity.selector, BalanceDelta.wrap(0));
@@ -209,21 +209,11 @@ contract AutoLP is BaseHook {
         // user have to approve the hook to spend the fee
         IERC20(Currency.unwrap(inputCurrency)).transferFrom(sender, address(this), fee);
         
-        console.log("add liquidity");
+        //console.log("add liquidity");
         // Add liquidity with the fee amount.
         _addLiquidity(key, params.zeroForOne, fee);
 
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
-    }
-
-    function afterSwap(
-        address,
-        PoolKey calldata key,
-        SwapParams calldata,
-        BalanceDelta,
-        bytes calldata
-    ) external override onlyPoolManager returns (bytes4, int128) {
-        return (BaseHook.afterSwap.selector, 0);
     }
 
     // ADD LIQUIDITY TO THE POOL, FOR THE FEE AMOUNT
@@ -254,9 +244,9 @@ contract AutoLP is BaseHook {
             uint160 sqrtRatioBX96 = TickMath.getSqrtPriceAtTick(tickUpper);
             
             liquidity = LiquidityAmounts.getLiquidityForAmount0(sqrtRatioAX96, sqrtRatioBX96, amount);
-            console.log("TickLower:", int256(tickLower));
-            console.log("TickUpper:", int256(tickUpper));
-            console.log("Liquidity:", uint256(liquidity));
+            //console.log("TickLower:", int256(tickLower));
+            //console.log("TickUpper:", int256(tickUpper));
+            //console.log("Liquidity:", uint256(liquidity));
         } else {
             // We have Token1. Need range below current tick.
             int24 compressed = tick / tickSpacing;
